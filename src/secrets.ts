@@ -16,6 +16,14 @@ export interface AppSecrets {
   tenantId: string;
   clientSecret?: string;
   cloudType: CloudType;
+  /** Second app. Folder-scoped file reads exchange a token for this client. */
+  readClientId?: string;
+  readClientSecret?: string;
+}
+
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
 }
 
 /**
@@ -36,6 +44,8 @@ class EnvironmentSecretsProvider implements SecretsProvider {
       tenantId: process.env.MS365_MCP_TENANT_ID || 'common',
       clientSecret: process.env.MS365_MCP_CLIENT_SECRET,
       cloudType,
+      readClientId: optionalEnv('MS365_MCP_READ_CLIENT_ID'),
+      readClientSecret: optionalEnv('MS365_MCP_READ_CLIENT_SECRET'),
     };
   }
 }
@@ -49,6 +59,8 @@ class EnvironmentSecretsProvider implements SecretsProvider {
  *   - ms365-mcp-tenant-id -> tenantId
  *   - ms365-mcp-client-secret -> clientSecret (optional)
  *   - ms365-mcp-cloud-type -> cloudType (optional, defaults to 'global')
+ *   - ms365-mcp-read-client-id -> readClientId (optional, with the secret)
+ *   - ms365-mcp-read-client-secret -> readClientSecret (optional, with the id)
  */
 class KeyVaultSecretsProvider implements SecretsProvider {
   private vaultUrl: string;
@@ -67,14 +79,21 @@ class KeyVaultSecretsProvider implements SecretsProvider {
 
     logger.info(`Fetching secrets from Key Vault: ${this.vaultUrl}`);
 
-    const [clientIdSecret, tenantIdSecret, clientSecretResult, cloudTypeResult] = await Promise.all(
-      [
-        client.getSecret('ms365-mcp-client-id'),
-        client.getSecret('ms365-mcp-tenant-id').catch(() => null),
-        client.getSecret('ms365-mcp-client-secret').catch(() => null),
-        client.getSecret('ms365-mcp-cloud-type').catch(() => null),
-      ]
-    );
+    const [
+      clientIdSecret,
+      tenantIdSecret,
+      clientSecretResult,
+      cloudTypeResult,
+      readClientIdResult,
+      readClientSecretResult,
+    ] = await Promise.all([
+      client.getSecret('ms365-mcp-client-id'),
+      client.getSecret('ms365-mcp-tenant-id').catch(() => null),
+      client.getSecret('ms365-mcp-client-secret').catch(() => null),
+      client.getSecret('ms365-mcp-cloud-type').catch(() => null),
+      client.getSecret('ms365-mcp-read-client-id').catch(() => null),
+      client.getSecret('ms365-mcp-read-client-secret').catch(() => null),
+    ]);
 
     if (!clientIdSecret.value) {
       throw new Error('Required secret ms365-mcp-client-id not found in Key Vault');
@@ -87,6 +106,8 @@ class KeyVaultSecretsProvider implements SecretsProvider {
       tenantId: tenantIdSecret?.value || 'common',
       clientSecret: clientSecretResult?.value,
       cloudType: parseCloudType(cloudTypeResult?.value),
+      readClientId: readClientIdResult?.value?.trim() || undefined,
+      readClientSecret: readClientSecretResult?.value?.trim() || undefined,
     };
   }
 }

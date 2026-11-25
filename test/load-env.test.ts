@@ -219,6 +219,8 @@ describe('loadEnvFile', () => {
       'MS365_MCP_CLIENT_SECRET',
       'MS365_MCP_TENANT_ID',
       'MS365_MCP_CLOUD_TYPE',
+      'MS365_MCP_READ_CLIENT_ID',
+      'MS365_MCP_READ_CLIENT_SECRET',
     ]);
   });
 });

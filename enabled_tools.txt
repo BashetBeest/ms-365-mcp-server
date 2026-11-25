@@ -1,7 +1,5 @@
-# ^get-drive-root-item$
 ^list-folder-files$
 ^get-drive-item$
 ^get-download-url$
 ^download-bytes$
-# ^search-onedrive-files$
 ^search-query$

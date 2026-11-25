@@ -28,11 +28,11 @@ class OboClient {
     this.graphScopes = [`${graphBase}/.default`];
   }
 
-  async exchangeToken(userAssertion: string): Promise<string> {
+  async exchangeToken(userAssertion: string, scopes?: string[]): Promise<string> {
     try {
       const result = await this.cca.acquireTokenOnBehalfOf({
         oboAssertion: userAssertion,
-        scopes: this.graphScopes,
+        scopes: scopes && scopes.length > 0 ? scopes : this.graphScopes,
       });
 
       if (!result?.accessToken) {

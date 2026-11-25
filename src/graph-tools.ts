@@ -122,6 +122,7 @@ import {
   serializedSize,
 } from './lib/log-safe.js';
 import { getRequestTokens } from './request-context.js';
+import { selectedFilesAccess } from './lib/selected-files-access.js';
 import { TOOL_CATEGORIES } from './tool-categories.js';
 
 // Tools from every Graph API version share one registry. Each tool's version is carried
@@ -1642,6 +1643,15 @@ async function probeAttachment(
   }
 }
 
+function selectedFilesRefusal(toolName: string): CallToolResult | undefined {
+  const access = selectedFilesAccess(toolName);
+  if (!access.error) return undefined;
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ error: access.error }) }],
+    isError: true,
+  };
+}
+
 async function mintDownloadUrl(
   target: string,
   accountParam: string | undefined,
@@ -1651,7 +1661,10 @@ async function mintDownloadUrl(
   probeWith?: Pick<GraphClient, 'makeRequest'>,
   // Given for drive items, whose metadata the caller already read: the name and type for
   // the redemption route, and the fields to return next to the URL.
-  known?: { probe: DownloadProbe; fields: Record<string, unknown> }
+  known?: { probe: DownloadProbe; fields: Record<string, unknown> },
+  // Folder-scoped token. Without it, a missing Graph downloadUrl would mint a ticket
+  // that redeems with the search token.
+  tokenOverride?: string
 ): Promise<CallToolResult | null> {
   const minting = getAttachmentMinting();
   if (!minting) return null;
@@ -1670,11 +1683,13 @@ async function mintDownloadUrl(
   const identityFromRequest = Boolean(authManager?.isOAuthModeEnabled() || getRequestTokens());
   // getToken() throws rather than returning nothing, and the early mint sites sit
   // outside the tool's own try, so a throw here would surface as a protocol error.
-  const requestToken = identityFromRequest
-    ? (getRequestTokens()?.accessToken ??
-      (await authManager?.getToken().catch(() => null)) ??
-      undefined)
-    : undefined;
+  const requestToken =
+    tokenOverride ??
+    (identityFromRequest
+      ? (getRequestTokens()?.accessToken ??
+        (await authManager?.getToken().catch(() => null)) ??
+        undefined)
+      : undefined);
   if (identityFromRequest && !requestToken) {
     return {
       content: [
@@ -2422,10 +2437,13 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
             isError: true,
           };
         }
+        const refused = selectedFilesRefusal('download-bytes');
+        if (refused) return refused;
         let accountAccessToken: string | undefined;
         if (authManager && !authManager.isOAuthModeEnabled() && !getRequestTokens()) {
           accountAccessToken = await authManager.getTokenForAccount(accountParam);
         }
+        accountAccessToken = selectedFilesAccess('download-bytes').token ?? accountAccessToken;
         // This tool's contract is the bytes, base64-encoded, whatever Graph says the
         // type is. forceBinary makes the client read the body with arrayBuffer() for
         // every Content-Type; without it only the isBinaryContentType allowlist is
@@ -2870,10 +2888,14 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
           };
         }
 
+        const refused = selectedFilesRefusal('get-download-url');
+        if (refused) return refused;
+        const selectedToken = selectedFilesAccess('get-download-url').token;
         let accountAccessToken: string | undefined;
         if (authManager && !authManager.isOAuthModeEnabled() && !getRequestTokens()) {
           accountAccessToken = await authManager.getTokenForAccount(accountParam);
         }
+        accountAccessToken = selectedToken ?? accountAccessToken;
         const response = await graphClient.graphRequest(itemPath, {
           accessToken: accountAccessToken,
           // We JSON.parse the metadata below, so force JSON - under --toon it'd be
@@ -2910,13 +2932,20 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
             typeof driveId === 'string' && typeof item.id === 'string'
               ? `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(item.id)}/content`
               : `${itemPath}/content`;
-          const minted = await mintDownloadUrl(byId, accountParam, authManager, undefined, {
-            probe: {
-              ...(name && { probedName: name }),
-              ...(mimeType && { probedContentType: mimeType }),
+          const minted = await mintDownloadUrl(
+            byId,
+            accountParam,
+            authManager,
+            undefined,
+            {
+              probe: {
+                ...(name && { probedName: name }),
+                ...(mimeType && { probedContentType: mimeType }),
+              },
+              fields: { name, size: item.size, contentType: mimeType },
             },
-            fields: { name, size: item.size, contentType: mimeType },
-          });
+            selectedToken
+          );
           if (minted) return minted;
         }
         if (getAttachmentMinting() && item?.folder) {
@@ -2937,7 +2966,14 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
           // The metadata path carries no downloadUrl, but the bytes are still
           // reachable at its /content sub-resource -- which is what a ticket
           // has to name, since that is what the redemption route will GET.
-          const minted = await mintDownloadUrl(`${itemPath}/content`, accountParam, authManager);
+          const minted = await mintDownloadUrl(
+            `${itemPath}/content`,
+            accountParam,
+            authManager,
+            undefined,
+            undefined,
+            selectedToken
+          );
           if (minted) return minted;
           return {
             content: [
@@ -3270,6 +3306,8 @@ async function executeGraphTool(
     // Resolve account-specific token if `account` parameter is provided (or auto-resolve for single account).
     // Skip in OAuth/HTTP mode — let the request context drive token selection via GraphClient.
     // Also skip when a request-context token exists (HTTP/OAuth flow where token comes from middleware).
+    const refused = selectedFilesRefusal(tool.alias);
+    if (refused) return refused;
     let accountAccessToken: string | undefined;
     if (authManager && !authManager.isOAuthModeEnabled() && !getRequestTokens()) {
       try {
@@ -3286,6 +3324,7 @@ async function executeGraphTool(
         };
       }
     }
+    accountAccessToken = selectedFilesAccess(tool.alias).token ?? accountAccessToken;
 
     const parameterDefinitions = tool.parameters || [];
 

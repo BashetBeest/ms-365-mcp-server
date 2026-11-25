@@ -150,6 +150,8 @@ describe('--obo /mcp: 401 on a rejected assertion, 403 outside the allowlist (#6
     process.env.MS365_MCP_RATE_LIMIT_DISABLED = 'true';
     delete process.env.MS365_MCP_OBO_ALLOWED_TENANTS;
     delete process.env.MS365_MCP_OBO_ALLOWED_USERS;
+    delete process.env.MS365_MCP_READ_CLIENT_ID;
+    delete process.env.MS365_MCP_READ_CLIENT_SECRET;
   });
 
   afterEach(async () => {

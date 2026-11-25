@@ -64,6 +64,7 @@ import { version } from './version.js';
 import { buildMcpServerInstructions } from './mcp-instructions.js';
 import OboClient from './obo-client.js';
 import { isRejectedAssertion, oboAllowlistRefusal, readOboAllowlist } from './lib/obo-access.js';
+import { dualOboScopes, exchangeDualObo } from './lib/dual-obo.js';
 import { requestContext } from './request-context.js';
 import { getSecrets, type AppSecrets } from './secrets.js';
 
@@ -336,6 +337,7 @@ class MicrosoftGraphServer {
   private secrets: AppSecrets | null;
   private oboClient: OboClient | null;
   private credentialCheck: ClientCredentialCheck | null = null;
+  private readOboClient: OboClient | null;
   private version: string = '0.0.0';
   private multiAccount: boolean = false;
   private accountNames: string[] = [];
@@ -374,6 +376,7 @@ class MicrosoftGraphServer {
     this.server = null;
     this.secrets = null;
     this.oboClient = null;
+    this.readOboClient = null;
   }
 
   private isLoopbackOnlyHttp(): boolean {
@@ -544,6 +547,25 @@ class MicrosoftGraphServer {
       }
       this.oboClient = new OboClient(this.secrets);
       logger.info('On-Behalf-Of (OBO) flow enabled');
+      const { readClientId, readClientSecret } = this.secrets;
+      if (Boolean(readClientId) !== Boolean(readClientSecret)) {
+        throw new Error(
+          'MS365_MCP_READ_CLIENT_ID and MS365_MCP_READ_CLIENT_SECRET must both be set.'
+        );
+      }
+      if (readClientId && readClientSecret) {
+        this.readOboClient = new OboClient({
+          clientId: readClientId,
+          clientSecret: readClientSecret,
+          tenantId: this.secrets.tenantId,
+          cloudType: this.secrets.cloudType,
+        });
+        logger.info('Folder-scoped file reads use the read app token');
+      }
+    } else if (this.secrets.readClientId || this.secrets.readClientSecret) {
+      throw new Error(
+        'MS365_MCP_READ_CLIENT_ID requires --http --obo. The folder-scoped token is exchanged from the OBO sign-in.'
+      );
     }
 
     const outputFormat = this.options.toon ? 'toon' : 'json';
@@ -1338,6 +1360,8 @@ class MicrosoftGraphServer {
           try {
             if (req.microsoftAuth) {
               let accessToken = req.microsoftAuth.accessToken;
+              let selectedFilesToken: string | undefined;
+              let selectedFilesError: string | undefined;
               if (this.oboClient) {
                 const refusal = oboAllowlist && oboAllowlistRefusal(accessToken, oboAllowlist);
                 if (refusal) {
@@ -1346,7 +1370,19 @@ class MicrosoftGraphServer {
                   return;
                 }
                 try {
-                  accessToken = await this.oboClient.exchangeToken(accessToken);
+                  const graphResource = getCloudEndpoints(this.secrets!.cloudType).graphApi;
+                  const exchanged = await exchangeDualObo(
+                    this.oboClient,
+                    this.readOboClient,
+                    accessToken,
+                    dualOboScopes(graphResource, this.secrets!.readClientId ?? '')
+                  );
+                  accessToken = exchanged.accessToken;
+                  selectedFilesToken = exchanged.selectedFilesToken;
+                  selectedFilesError = exchanged.selectedFilesError;
+                  if (selectedFilesError) {
+                    logger.error(selectedFilesError);
+                  }
                 } catch (error) {
                   // Entra refused the assertion itself: ask the client to sign in again
                   // instead of reporting a server fault (#696).
@@ -1362,7 +1398,10 @@ class MicrosoftGraphServer {
                   return;
                 }
               }
-              await requestContext.run({ accessToken }, handler);
+              await requestContext.run(
+                { accessToken, selectedFilesToken, selectedFilesError },
+                handler
+              );
             } else {
               await handler();
             }
