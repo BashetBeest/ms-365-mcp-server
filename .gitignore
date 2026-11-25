@@ -162,5 +162,8 @@ CLAUDE.md
 # MCP configuration (contains sensitive keys)
 .mcp.json
 
+# Cursor ignore file
+.cursorignore
+
 # Finder metadata files
 .DS_Store
